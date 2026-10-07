@@ -1,10 +1,3 @@
-"""
-train.py - train the BiLSTM and the TF-IDF baseline, compare them, save plots.
-
-Run:  python train.py
-Everything is seeded and capped (--time-budget-min) to finish on a laptop CPU
-in well under 15 minutes.
-"""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +9,7 @@ from pathlib import Path
 
 import joblib
 import matplotlib
-matplotlib.use("Agg")  # no display needed: we only save PNG files
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -39,20 +32,13 @@ MODELS = ROOT / "models"
 
 
 def set_seed(seed: int = SEED) -> None:
-    """Fix every random number generator -> same results on every run."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
 
-# ---------------------------------------------------------------- metrics ----
 def pick_threshold(y_true, proba) -> float:
-    """Choose the decision threshold on the VALIDATION set by maximising F2.
-
-    WHY F2? It weighs recall twice as much as precision. Missing a phishing email
-    (false negative) is worse than flagging a safe one (false positive), so we
-    deliberately lean towards catching more phishing.
-    """
+    # F2 on the validation set, recall matters more than precision here
     grid = np.linspace(0.05, 0.95, 91)
     scores = [fbeta_score(y_true, proba >= t, beta=2, zero_division=0) for t in grid]
     return float(grid[int(np.argmax(scores))])
@@ -69,18 +55,17 @@ def evaluate(y_true, proba, thr: float) -> dict:
     }
 
 
-# ------------------------------------------------------------------ LSTM ----
 def make_loader(ids, lengths, has_url, labels, batch_size, shuffle) -> DataLoader:
     ds = TensorDataset(torch.from_numpy(ids), torch.from_numpy(lengths),
                        torch.tensor(has_url, dtype=torch.float32),
                        torch.tensor(labels, dtype=torch.float32))
-    g = torch.Generator().manual_seed(SEED)  # reproducible shuffling
+    g = torch.Generator().manual_seed(SEED)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, generator=g)
 
 
 @torch.no_grad()
 def predict_loader(model, loader):
-    model.eval()  # turns Dropout off
+    model.eval()
     probas = []
     for ids, lengths, url, _ in loader:
         probas.append(model.predict_proba(ids, lengths, url).numpy())
@@ -88,8 +73,6 @@ def predict_loader(model, loader):
 
 
 def train_lstm(model, train_loader, val_loader, y_val, pos_weight, args):
-    # CLASS IMBALANCE: pos_weight > 1 makes mistakes on the rarer class cost more.
-    # (pos_weight = n_negative / n_positive; if phishing is rare, it's > 1.)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -102,7 +85,7 @@ def train_lstm(model, train_loader, val_loader, y_val, pos_weight, args):
             opt.zero_grad()
             loss = loss_fn(model(ids, lengths, url), y)
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # stops exploding gradients in RNNs
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             total += loss.item() * len(y)
 
@@ -110,9 +93,6 @@ def train_lstm(model, train_loader, val_loader, y_val, pos_weight, args):
         print(f"epoch {epoch:2d} | train loss {total / len(train_loader.dataset):.4f} "
               f"| val ROC-AUC {val_auc:.4f} | {time.time() - start:.0f}s")
 
-        # EARLY STOPPING: stop when validation score hasn't improved for `patience`
-        # epochs, and go back to the best weights. WHY: after a point the network
-        # just memorises the training set (overfits).
         if val_auc > best_auc:
             best_auc, best_state, bad_epochs = val_auc, copy.deepcopy(model.state_dict()), 0
         else:
@@ -127,7 +107,6 @@ def train_lstm(model, train_loader, val_loader, y_val, pos_weight, args):
     return model
 
 
-# ----------------------------------------------------------------- plots ----
 def save_confusion(y_true, proba, thr, title, path):
     cm = confusion_matrix(y_true, (proba >= thr).astype(int))
     disp = ConfusionMatrixDisplay(cm, display_labels=["Safe", "Phishing"])
@@ -154,7 +133,6 @@ def save_roc(y_true, curves: dict, path):
     plt.close(fig)
 
 
-# ------------------------------------------------------------------ main ----
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=10)
@@ -166,7 +144,7 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--time-budget-min", type=float, default=10.0,
-                    help="stop LSTM training after this many minutes (keeps the run < 15 min)")
+                    help="stop LSTM training after this many minutes")
     args = ap.parse_args()
 
     set_seed()
@@ -183,7 +161,6 @@ def main() -> None:
     print(f"rows: train={len(train_df)} val={len(val_df)} test={len(test_df)} "
           f"| phishing share (train): {train_df['label'].mean():.1%}")
 
-    # Vocabulary from TRAIN only, so the test set stays truly unseen.
     vocab = Vocab.build(train_df["tokens"])
     print(f"vocabulary size: {len(vocab)}")
 
@@ -197,7 +174,7 @@ def main() -> None:
     test_loader = make_loader(*te, 256, shuffle=False)
     y_val, y_test = va[3], te[3]
 
-    # ---------------- BiLSTM ----------------
+    # BiLSTM
     n_pos = int(train_df["label"].sum())
     pos_weight = (len(train_df) - n_pos) / max(n_pos, 1)
     model = PhishingBiLSTM(len(vocab), args.embed_dim, args.hidden_dim, args.dropout)
@@ -211,10 +188,8 @@ def main() -> None:
     lstm_thr = pick_threshold(y_val, lstm_val)
     lstm_metrics = evaluate(y_test, lstm_test, lstm_thr)
 
-    # ---------------- Baseline: TF-IDF + Logistic Regression ----------------
-    # WHY a baseline? If a tiny linear model matches the LSTM, the LSTM isn't
-    # earning its complexity. Comparing against it keeps us honest.
-    def to_text(d):  # tokens -> one string; has_url becomes a pseudo-word
+    # baseline: tf-idf + logistic regression
+    def to_text(d):
         return [" ".join(t) + (" hasurlflag" if u else "") for t, u in zip(d["tokens"], d["has_url"])]
 
     print("\nTraining TF-IDF + Logistic Regression baseline...")
@@ -229,7 +204,6 @@ def main() -> None:
     base_thr = pick_threshold(y_val, base_val)
     base_metrics = evaluate(y_test, base_test, base_thr)
 
-    # ---------------- save artifacts ----------------
     torch.save(model.state_dict(), MODELS / "lstm.pt")
     vocab.save(MODELS / "vocab.json")
     joblib.dump(baseline, MODELS / "baseline.joblib")
@@ -241,7 +215,6 @@ def main() -> None:
     save_confusion(y_test, base_test, base_thr, "TF-IDF + LR - confusion matrix (test)", ASSETS / "confusion_matrix_baseline.png")
     save_roc(y_test, {"BiLSTM": lstm_test, "TF-IDF + LR": base_test}, ASSETS / "roc_curve.png")
 
-    # ---------------- comparison table ----------------
     rows = [("TF-IDF + Logistic Regression", base_metrics, base_time),
             ("BiLSTM (PyTorch)", lstm_metrics, lstm_time)]
     lines = ["| Model | Precision | Recall | F1 | ROC-AUC | Threshold | Train time |",
@@ -254,7 +227,7 @@ def main() -> None:
     (ASSETS / "metrics.json").write_text(json.dumps(
         {"lstm": lstm_metrics, "baseline": base_metrics}, indent=2))
 
-    print("\n=== TEST SET RESULTS (recall = share of phishing we catch) ===")
+    print("\n=== TEST SET RESULTS ===")
     print(table)
     print(f"\nTotal time: {(time.time() - t0) / 60:.1f} min. Plots saved in {ASSETS}")
 

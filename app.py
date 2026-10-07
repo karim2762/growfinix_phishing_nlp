@@ -1,8 +1,3 @@
-"""
-app.py - Streamlit demo.   Run:  streamlit run app.py
-
-EDUCATIONAL DEMO ONLY. See the disclaimer in the app and in README.md.
-"""
 import streamlit as st
 
 from src.predict import MODELS, Detector, highlight_html
@@ -20,7 +15,7 @@ st.warning(
 )
 
 
-@st.cache_resource  # load the model once, not on every button click
+@st.cache_resource
 def get_detector() -> Detector:
     return Detector()
 
@@ -47,7 +42,7 @@ if st.button("Analyze", type="primary") and text.strip():
     scores = detector.suspicious_words(text)
     st.subheader("Suspicious words")
     if scores:
-        st.markdown(highlight_html(text, scores), unsafe_allow_html=True)  # text is HTML-escaped inside
+        st.markdown(highlight_html(text, scores), unsafe_allow_html=True)
         st.caption("Darker red = removing that word lowers the phishing score more.")
     else:
         st.write("No single word stood out.")

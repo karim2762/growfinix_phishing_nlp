@@ -1,23 +1,3 @@
-"""
-download_data.py - fetch an open phishing dataset and write data/clean.csv
-
-Usage:
-    python download_data.py                    # Hugging Face dataset (default)
-    python download_data.py --source sms       # UCI SMS Spam Collection (small, fallback)
-
-WHY this script exists:
-    Raw datasets are messy (duplicates, empty rows, different column names).
-    We normalise everything to ONE simple format so the rest of the project
-    only has to understand a single CSV:
-
-        text   - the raw email / SMS / URL
-        label  - 1 = phishing/spam, 0 = genuine ("ham")
-        source - where the row came from (handy for analysis)
-
-We download the raw JSON files directly with `requests` instead of using the
-`datasets` library, because newer `datasets` versions no longer run the custom
-loading script this Hugging Face repo uses.
-"""
 from __future__ import annotations
 
 import argparse
@@ -29,20 +9,19 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-SEED = 42  # fixed seed -> the same rows are sampled every run
-ROOT = Path(__file__).resolve().parent  # pathlib: works on Windows/Mac/Linux
+SEED = 42
+ROOT = Path(__file__).resolve().parent
 RAW_DIR = ROOT / "data" / "raw"
 OUT_CSV = ROOT / "data" / "clean.csv"
 
 HF_BASE = "https://huggingface.co/datasets/ealvaradob/phishing-dataset/resolve/main/"
-HF_FILES = {"texts": "texts.json", "urls": "urls.json"}  # emails+SMS, and URLs
+HF_FILES = {"texts": "texts.json", "urls": "urls.json"}
 UCI_URL = "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip"
 
-MAX_CHARS = 5000  # emails can be huge; the model only reads the first ~200 tokens anyway
+MAX_CHARS = 5000
 
 
 def download(url: str, dest: Path) -> Path:
-    """Stream a file to disk (skips the download if we already have it)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 0:
         print(f"[skip] {dest.name} already downloaded")
@@ -57,11 +36,10 @@ def download(url: str, dest: Path) -> Path:
 
 
 def load_hf_json(path: Path, source: str) -> pd.DataFrame:
-    """Read one of the HF json files into a (text, label, source) frame."""
-    try:  # normal case: a JSON list of {"text": ..., "label": ...}
+    try:
         with open(path, "r", encoding="utf-8") as f:
             df = pd.DataFrame(json.load(f))
-    except json.JSONDecodeError:  # fallback: JSON-lines
+    except json.JSONDecodeError:
         df = pd.read_json(path, lines=True)
     df = df[["text", "label"]].copy()
     df["source"] = source
@@ -82,35 +60,32 @@ def load_sms() -> pd.DataFrame:
         with z.open("SMSSpamCollection") as f:
             df = pd.read_csv(io.TextIOWrapper(f, encoding="utf-8"), sep="\t",
                              header=None, names=["label", "text"])
-    df["label"] = (df["label"] == "spam").astype(int)  # spam -> 1, ham -> 0
+    df["label"] = (df["label"] == "spam").astype(int)
     df["source"] = "sms"
     return df[["text", "label", "source"]]
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Basic hygiene so we never train on junk or duplicate rows."""
     n0 = len(df)
     df = df.dropna(subset=["text", "label"]).copy()
     df["text"] = df["text"].astype(str).str.strip().str.slice(0, MAX_CHARS)
     df["label"] = df["label"].astype(int)
     df = df[(df["text"].str.len() >= 3) & df["label"].isin([0, 1])]
 
-    # WHY: identical text with conflicting labels is label noise -> drop all copies.
+    # same text with different labels -> drop all of them
     conflict = df.groupby("text")["label"].transform("nunique") > 1
     df = df[~conflict]
-    # WHY: exact duplicates leak between train and test and inflate scores.
     df = df.drop_duplicates(subset="text")
     print(f"[clean] {n0} -> {len(df)} rows")
     return df
 
 
 def cap(df: pd.DataFrame, limits: dict[str, int]) -> pd.DataFrame:
-    """Down-sample each source so training stays CPU-friendly (<15 min)."""
     parts = []
     for source, g in df.groupby("source"):
         limit = limits.get(source)
         if limit and len(g) > limit:
-            g = g.sample(n=limit, random_state=SEED)  # random but reproducible
+            g = g.sample(n=limit, random_state=SEED)
         parts.append(g)
     return pd.concat(parts).sample(frac=1.0, random_state=SEED).reset_index(drop=True)
 
@@ -124,7 +99,7 @@ def main() -> None:
 
     try:
         df = load_huggingface() if args.source == "hf" else load_sms()
-    except Exception as e:  # network down, file renamed, etc.
+    except Exception as e:
         if args.source == "hf":
             print(f"[warn] Hugging Face download failed ({e}).\n"
                   f"       Falling back to the UCI SMS Spam Collection.")

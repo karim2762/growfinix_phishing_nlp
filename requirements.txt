@@ -1,0 +1,10 @@
+# Pinned versions known to work together on Python 3.10 - 3.12 (CPU only).
+# WHY pin? So the project behaves the same on your machine as on mine.
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.2
+matplotlib==3.9.2
+nltk==3.9.1
+requests==2.32.3
+torch==2.4.1
+streamlit==1.39.0
